@@ -1053,7 +1053,7 @@ darwin_nat_target::decode_message (mach_msg_header_t *hdr,
     }
   else if (hdr->msgh_id == 0x48)
     {
-      /* MACH_NOTIFY_DEAD_NAME: notification for exit.  */
+      /* MACH_NOTIFY_DEAD_NAME: notification for exit *or* WIFSTOPPED.  */
       int res;
 
       res = darwin_decode_notify_message (hdr, &inf);
@@ -1096,15 +1096,22 @@ darwin_nat_target::decode_message (mach_msg_header_t *hdr,
 		{
 		  status->kind = TARGET_WAITKIND_EXITED;
 		  status->value.integer = WEXITSTATUS (wstatus);
+		  inferior_debug (4, _("darwin_wait: pid=%d exit, status=0x%x\n"),
+				  res_pid, wstatus);
+		}
+	      else if (WIFSTOPPED (wstatus))
+		{
+		  status->kind = TARGET_WAITKIND_IGNORE;
+		  inferior_debug (4, _("darwin_wait: pid %d received WIFSTOPPED\n"), res_pid);
+		  return minus_one_ptid;
 		}
 	      else
 		{
 		  status->kind = TARGET_WAITKIND_SIGNALLED;
 		  status->value.sig = gdb_signal_from_host (WTERMSIG (wstatus));
+		  inferior_debug (4, _("darwin_wait: pid=%d received signal %d\n"),
+			      res_pid, status->value.sig);
 		}
-
-	      inferior_debug (4, _("darwin_wait: pid=%d exit, status=0x%x\n"),
-			      res_pid, wstatus);
 
 	      /* Looks necessary on Leopard and harmless...  */
 	      wait4 (inf->pid, &wstatus, 0, NULL);

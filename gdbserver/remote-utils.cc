@@ -68,11 +68,18 @@
 #include <ws2tcpip.h>
 #endif
 
+
+#if HAVE_SYS_UN_H
+#include <sys/un.h>
+#endif
+#include <string.h>
+
 #ifndef HAVE_SOCKLEN_T
 typedef int socklen_t;
 #endif
 
 #ifndef IN_PROCESS_AGENT
+
 
 /* Extra value for readchar_callback.  */
 enum {
@@ -192,8 +199,8 @@ handle_accept_event (int err, gdb_client_data client_data)
     fprintf (stderr, _("Could not obtain remote address: %s\n"),
 	     gai_strerror (r));
   else
-    fprintf (stderr, _("Remote debugging from host %s, port %s\n"),
-	     orig_host, orig_port);
+    fprintf (stderr, _ ("Remote debugging started\n"));
+
 
   enable_async_notification (remote_desc);
 
@@ -207,6 +214,7 @@ handle_accept_event (int err, gdb_client_data client_data)
      until GDB as selected all-stop/non-stop, and has queried the
      threads' status ('?').  */
   target_async (0);
+
 }
 
 /* Prepare for a later connection to a remote debugger.
@@ -316,9 +324,48 @@ remote_prepare (const char *name)
 void
 remote_open (const char *name)
 {
-  const char *port_str;
+#ifdef HAVE_SYS_UN_H
+  if (name[0] == '+')
+    {
+#ifdef USE_WIN32API
+      error ("Only <host>:<port> is supported on this platform.");
+#else
+      struct sockaddr_un sockaddr;
+      socklen_t sockaddrlen;
 
-  port_str = strchr (name, ':');
+      name += 1; // skip the initial +
+
+      listen_desc = socket (AF_UNIX, SOCK_STREAM, 0);
+      if (listen_desc < 0)
+        perror_with_name ("Could not create Unix-domain socket");
+
+      memset (&sockaddr, 0, sizeof sockaddr);
+      sockaddr.sun_family = AF_UNIX;
+      strncpy (sockaddr.sun_path, name, sizeof sockaddr.sun_path);
+
+      unlink (sockaddr.sun_path);
+      sockaddrlen
+          = sizeof (sockaddr.sun_family) + strlen (sockaddr.sun_path) + 1;
+      if (bind (listen_desc, (struct sockaddr *)&sockaddr, sockaddrlen) < 0)
+        perror_with_name ("Could not bind to Unix-domain socket");
+      if (listen (listen_desc, 1) < 0)
+        perror_with_name ("Could not listen to Unix-domain socket");
+
+      fprintf (stderr, "Listening on Unix socket %s\n", sockaddr.sun_path);
+      fflush (stderr);
+
+      /* Register the event loop handler.  */
+      add_file_handler (listen_desc, handle_accept_event, NULL);
+
+#endif
+    }
+  else
+#endif /* HAVE_SYS_UN_H */
+    {
+
+      const char *port_str;
+
+      port_str = strchr (name, ':');
 #ifdef USE_WIN32API
   if (port_str == NULL)
     error ("Only HOST:PORT is supported on this platform.");
@@ -405,6 +452,7 @@ remote_open (const char *name)
       /* Register the event loop handler.  */
       add_file_handler (listen_desc, handle_accept_event, NULL,
 			"remote-listen");
+    }
     }
 }
 
@@ -806,6 +854,7 @@ block_unblock_async_io (int block)
 #endif
 }
 
+
 /* Current state of asynchronous I/O.  */
 static int async_io_enabled;
 
@@ -819,6 +868,7 @@ enable_async_io (void)
   block_unblock_async_io (0);
 
   async_io_enabled = 1;
+
 }
 
 /* Disable asynchronous I/O.  */
@@ -831,6 +881,7 @@ disable_async_io (void)
   block_unblock_async_io (1);
 
   async_io_enabled = 0;
+
 }
 
 void
@@ -905,11 +956,13 @@ reset_readchar (void)
 static void
 process_remaining (void *context)
 {
+
   /* This is a one-shot event.  */
   readchar_callback = NOT_SCHEDULED;
 
   if (readchar_bufcnt > 0)
     handle_serial_event (0, NULL);
+
 }
 
 /* If there is still data in the buffer, queue another event to process it,
@@ -1194,6 +1247,7 @@ prepare_resume_reply (char *buf, ptid_t ptid,
 	regcache = get_thread_regcache (current_thread, 1);
 
 	if (the_target->stopped_by_watchpoint ())
+
 	  {
 	    CORE_ADDR addr;
 	    int i;

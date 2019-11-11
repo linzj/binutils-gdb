@@ -1220,6 +1220,12 @@ c_type_print_base_struct_union (struct type *type, struct ui_file *stream,
 	      fprintf_filtered (stream, " : %d",
 				TYPE_FIELD_BITSIZE (type, i));
 	    }
+	    else if (!field_is_static (&type->field (i)))
+	      {
+	        /* print the bit pos.  */
+	        fprintf_filtered (stream, " bitpos: %lld",
+	                          TYPE_FIELD_BITPOS (type, i));
+	      }
 	  fprintf_filtered (stream, ";\n");
 	}
 

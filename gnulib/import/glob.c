@@ -86,6 +86,14 @@
 #include <glob_internal.h>
 #include <scratch_buffer.h>
 
+#define GLOB_PERIOD     (1 << 7)/* Leading '.' can be matched by metachars.  */
+# define GLOB_ONLYDIR    (1 << 13)/* Match only directories.  */
+# define GLOB_TILDE_CHECK (1 << 14)/* Like GLOB_TILDE but return an error */
+
+# define __GLOB_FLAGS   (GLOB_ERR|GLOB_MARK|GLOB_NOSORT|GLOB_DOOFFS| \
+                         GLOB_NOESCAPE|GLOB_NOCHECK|GLOB_APPEND|     \
+                         GLOB_PERIOD|GLOB_ALTDIRFUNC|GLOB_BRACE|     \
+                         GLOB_NOMAGIC|GLOB_TILDE|GLOB_ONLYDIR|GLOB_TILDE_CHECK)
 static const char *next_brace_sub (const char *begin, int flags) __THROWNL;
 
 /* The type of ((struct dirent *) 0)->d_type is 'unsigned char' on most

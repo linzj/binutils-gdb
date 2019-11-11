@@ -376,9 +376,9 @@ gdbreplay$(EXEEXT): $(sort $(GDBREPLAY_OBS)) $(LIBGNU) $(LIBIBERTY) \
 	$(SILENCE) rm -f gdbreplay$(EXEEXT)
 	$(ECHO_CXXLD) $(CC_LD) $(INTERNAL_CFLAGS) $(INTERNAL_LDFLAGS) \
 		$(CXXFLAGS) \
-		-o gdbreplay$(EXEEXT) $(GDBREPLAY_OBS) $(XM_CLIBS) \
+		-o gdbreplay$(EXEEXT) $(GDBREPLAY_OBS) \
 		$(GDBSUPPORT) $(LIBGNU) $(LIBGNU_EXTRA_LIBS) \
-		$(LIBIBERTY) $(INTL) $(WIN32APILIBS)
+		$(LIBIBERTY) $(INTL) $(WIN32APILIBS) $(XM_CLIBS)
 
 IPA_OBJS = \
 	alloc-ipa.o \

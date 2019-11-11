@@ -1515,7 +1515,13 @@ _bfd_elf_discard_section_eh_frame
 			&& cookie->rel->r_offset == ent->offset + 8);
 	    keep = !(*reloc_symbol_deleted_p) (ent->offset + 8, cookie);
 	  }
-	if (keep)
+
+        if (info->eh_frame_hdr_type == 0)
+          {
+            keep = 0;
+          }
+
+        if (keep)
 	  {
 	    if (bfd_link_pic (info)
 		&& (((ent->fde_encoding & 0x70) == DW_EH_PE_absptr

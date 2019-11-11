@@ -101,10 +101,12 @@ post_fork_inferior (int pid, const char *program)
 #ifdef SIGTTOU
   signal (SIGTTOU, SIG_IGN);
   signal (SIGTTIN, SIG_IGN);
+#ifndef __ANDROID__
   terminal_fd = fileno (stderr);
   old_foreground_pgrp = tcgetpgrp (terminal_fd);
   tcsetpgrp (terminal_fd, pid);
   atexit (restore_old_foreground_pgrp);
+#endif
 #endif
 
   startup_inferior (the_target, pid,
