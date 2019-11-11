@@ -23,6 +23,7 @@
 #include "gdb_tilde_expand.h"
 #include <glob.h>
 
+# define GLOB_TILDE_CHECK (1 << 14)/* Like GLOB_TILDE but return an error */
 /* RAII-style class wrapping "glob".  */
 
 class gdb_glob

@@ -101,7 +101,7 @@
 # include "nat/linux-btrace.h"
 # include "gdbsupport/btrace-common.h"
 #endif
-
+#define HAVE_ELF32_AUXV_T
 #ifndef HAVE_ELF32_AUXV_T
 /* Copied from glibc's elf.h.  */
 typedef struct
@@ -116,7 +116,7 @@ typedef struct
     } a_un;
 } Elf32_auxv_t;
 #endif
-
+#define HAVE_ELF64_AUXV_T
 #ifndef HAVE_ELF64_AUXV_T
 /* Copied from glibc's elf.h.  */
 typedef struct
@@ -5371,7 +5371,7 @@ proc_xfer_memory (CORE_ADDR memaddr, unsigned char *readbuf,
 
   int fd = proc->priv->mem_fd;
   if (fd == -1)
-    return EIO;
+    goto no_proc;
 
   while (len > 0)
     {
@@ -5411,6 +5411,132 @@ proc_xfer_memory (CORE_ADDR memaddr, unsigned char *readbuf,
     }
 
   return 0;
+no_proc:
+  /* Round starting address down to longword boundary.  */
+  auto addr = memaddr & -(CORE_ADDR)sizeof (PTRACE_XFER_TYPE);
+  /* Round ending address up; get number of longwords that makes.  */
+  auto count = ((((memaddr + len) - addr) + sizeof (PTRACE_XFER_TYPE) - 1)
+                / sizeof (PTRACE_XFER_TYPE));
+  int i;
+  int pid;
+  int ret;
+  if (current_thread != NULL)
+    pid = lwpid_of (current_thread);
+  else
+    {
+      struct lwp_info *lwp;
+      pid = current_process ()->pid;
+      lwp = find_lwp_pid (ptid_t (pid));
+      if (!lwp_is_stopped (lwp))
+        {
+          error ("pid: %d is not stopped when proc_xfer_memory! addr: %p.\n",
+                 pid, (void *)memaddr);
+        }
+    }
+  /* Allocate buffer of that many longwords.  */
+  PTRACE_XFER_TYPE *buffer = XALLOCAVEC (PTRACE_XFER_TYPE, count);
+
+  if (readbuf)
+    {
+      /* Read all the longwords */
+      errno = 0;
+      for (i = 0; i < count; i++, addr += sizeof (PTRACE_XFER_TYPE))
+        {
+          /* Coerce the 3rd arg to a uintptr_t first to avoid potential gcc
+             warning about coercing an 8 byte integer to a 4 byte pointer.  */
+          buffer[i] = ptrace (PTRACE_PEEKTEXT, pid,
+                              (PTRACE_TYPE_ARG3)(uintptr_t)addr,
+                              (PTRACE_TYPE_ARG4)0);
+          if (errno)
+            break;
+        }
+      ret = errno;
+
+      /* Copy appropriate bytes out of the buffer.  */
+      if (i > 0)
+        {
+          i *= sizeof (PTRACE_XFER_TYPE);
+          i -= memaddr & (sizeof (PTRACE_XFER_TYPE) - 1);
+          memcpy (readbuf,
+                  (char *)buffer + (memaddr & (sizeof (PTRACE_XFER_TYPE) - 1)),
+                  i < len ? i : len);
+        }
+
+      return ret;
+    }
+  else
+    {
+      if (len == 0)
+        {
+          /* Zero length write always succeeds.  */
+          return 0;
+        }
+
+      if (debug_threads)
+        {
+          /* Dump up to four bytes.  */
+          char str[4 * 2 + 1];
+          char *p = str;
+          int dump = len < 4 ? len : 4;
+
+          for (i = 0; i < dump; i++)
+            {
+              sprintf (p, "%02x", writebuf[i]);
+              p += 2;
+            }
+          *p = '\0';
+
+          debug_printf ("Writing %s to 0x%08lx in process %d\n", str,
+                        (long)memaddr, pid);
+        }
+
+      /* Fill start and end extra bytes of buffer with existing memory data. */
+
+      errno = 0;
+      /* Coerce the 3rd arg to a uintptr_t first to avoid potential gcc warning
+         about coercing an 8 byte integer to a 4 byte pointer.  */
+      buffer[0]
+          = ptrace (PTRACE_PEEKTEXT, pid, (PTRACE_TYPE_ARG3)(uintptr_t)addr,
+                    (PTRACE_TYPE_ARG4)0);
+      if (errno)
+        return errno;
+
+      if (count > 1)
+        {
+          errno = 0;
+          buffer[count - 1] = ptrace (
+              PTRACE_PEEKTEXT, pid,
+              /* Coerce to a uintptr_t first to avoid potential gcc warning
+                 about coercing an 8 byte integer to a 4 byte pointer.  */
+              (PTRACE_TYPE_ARG3)(uintptr_t)(addr
+                                            + (count - 1)
+                                                  * sizeof (PTRACE_XFER_TYPE)),
+              (PTRACE_TYPE_ARG4)0);
+          if (errno)
+            return errno;
+        }
+
+      /* Copy data to be written over corresponding part of buffer.  */
+
+      memcpy ((char *)buffer + (memaddr & (sizeof (PTRACE_XFER_TYPE) - 1)),
+              writebuf, len);
+
+      /* Write the entire buffer.  */
+
+      for (i = 0; i < count; i++, addr += sizeof (PTRACE_XFER_TYPE))
+        {
+          errno = 0;
+          ptrace (PTRACE_POKETEXT, pid,
+                  /* Coerce to a uintptr_t first to avoid potential gcc warning
+                     about coercing an 8 byte integer to a 4 byte pointer.  */
+                  (PTRACE_TYPE_ARG3)(uintptr_t)addr,
+                  (PTRACE_TYPE_ARG4)buffer[i]);
+          if (errno)
+            return errno;
+        }
+
+      return 0;
+    }
 }
 
 int
@@ -5467,10 +5593,17 @@ linux_process_target::request_interrupt ()
 {
   /* Send a SIGINT to the process group.  This acts just like the user
      typed a ^C on the controlling terminal.  */
+#if defined(__ANDROID__)
+  int res = ::kill (signal_pid, SIGINT);
+  if (res == -1)
+    warning (_ ("Sending SIGINT to process group of pid %ld failed: %s"),
+             signal_pid, safe_strerror (errno));
+#else
   int res = ::kill (-signal_pid, SIGINT);
   if (res == -1)
-    warning (_("Sending SIGINT to process group of pid %ld failed: %s"),
-	     signal_pid, safe_strerror (errno));
+    warning (_ ("Sending SIGINT to process group of pid %ld failed: %s"),
+             signal_pid, safe_strerror (errno));
+#endif
 }
 
 bool
