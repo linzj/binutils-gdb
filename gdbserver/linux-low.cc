@@ -403,22 +403,8 @@ linux_process_target::low_delete_thread (arch_lwp_info *info)
   gdb_assert (info == nullptr);
 }
 
-/* Open the /proc/PID/mem file for PROC.  */
-
-static void
-open_proc_mem_file (process_info *proc)
-{
-  gdb_assert (proc->priv->mem_fd == -1);
-
-  char filename[64];
-  xsnprintf (filename, sizeof filename, "/proc/%d/mem", proc->pid);
-
-  proc->priv->mem_fd
-    = gdb_open_cloexec (filename, O_RDWR | O_LARGEFILE, 0).release ();
-}
-
 process_info *
-linux_process_target::add_linux_process_no_mem_file (int pid, int attached)
+linux_process_target::add_linux_process (int pid, int attached)
 {
   struct process_info *proc;
 
@@ -426,26 +412,13 @@ linux_process_target::add_linux_process_no_mem_file (int pid, int attached)
   proc->priv = XCNEW (struct process_info_private);
 
   proc->priv->arch_private = low_new_process ();
-  proc->priv->mem_fd = -1;
 
-  return proc;
-}
-
-
-process_info *
-linux_process_target::add_linux_process (int pid, int attached)
-{
-  process_info *proc = add_linux_process_no_mem_file (pid, attached);
-  open_proc_mem_file (proc);
   return proc;
 }
 
 void
 linux_process_target::remove_linux_process (process_info *proc)
 {
-  if (proc->priv->mem_fd >= 0)
-    close (proc->priv->mem_fd);
-
   this->low_delete_process (proc->priv->arch_private);
 
   xfree (proc->priv);
@@ -978,21 +951,13 @@ linux_process_target::create_inferior (const char *program,
 			 NULL, NULL, NULL, NULL);
   }
 
-  /* When spawning a new process, we can't open the mem file yet.  We
-     still have to nurse the process through the shell, and that execs
-     a couple times.  The address space a /proc/PID/mem file is
-     accessing is destroyed on exec.  */
-  process_info *proc = add_linux_process_no_mem_file (pid, 0);
+  add_linux_process (pid, 0);
 
   ptid = ptid_t (pid, pid);
   new_lwp = add_lwp (ptid);
   new_lwp->must_set_ptrace_flags = 1;
 
   post_fork_inferior (pid, program);
-
-  /* PROC is now past the shell running the program we want, so we can
-     open the /proc/PID/mem file.  */
-  open_proc_mem_file (proc);
 
   return pid;
 }
@@ -1149,9 +1114,7 @@ linux_process_target::attach (unsigned long pid)
   ptid_t ptid = ptid_t (pid, pid);
   int err;
 
-  /* Delay opening the /proc/PID/mem file until we've successfully
-     attached.  */
-  proc = add_linux_process_no_mem_file (pid, 1);
+  proc = add_linux_process (pid, 1);
 
   /* Attach to PID.  We will check for other threads
      soon.  */
@@ -1163,8 +1126,6 @@ linux_process_target::attach (unsigned long pid)
       std::string reason = linux_ptrace_attach_fail_reason_string (ptid, err);
       error ("Cannot attach to process %ld: %s", pid, reason.c_str ());
     }
-
-  open_proc_mem_file (proc);
 
   /* Don't ignore the initial SIGSTOP if we just attached to this
      process.  It will be collected by wait shortly.  */
@@ -5353,71 +5314,93 @@ linux_read_memory (CORE_ADDR memaddr, unsigned char *myaddr, int len)
   return the_target->read_memory (memaddr, myaddr, len);
 }
 
+/* Copy LEN bytes from inferior's memory starting at MEMADDR
+   to debugger memory starting at MYADDR.  */
 
-/* Helper for read_memory/write_memory using /proc/PID/mem.  Because
-   we can use a single read/write call, this can be much more
-   efficient than banging away at PTRACE_PEEKTEXT.  Also, unlike
-   PTRACE_PEEKTEXT/PTRACE_POKETEXT, this works with running threads.
-   One an only one of READBUF and WRITEBUF is non-null.  If READBUF is
-   not null, then we're reading, otherwise we're writing.  */
-
-static int
-proc_xfer_memory (CORE_ADDR memaddr, unsigned char *readbuf,
-		  const gdb_byte *writebuf, int len)
+int
+linux_process_target::read_memory (CORE_ADDR memaddr,
+				   unsigned char *myaddr, int len)
 {
-  gdb_assert ((readbuf == nullptr) != (writebuf == nullptr));
+  int pid = lwpid_of (current_thread);
+  PTRACE_XFER_TYPE *buffer;
+  CORE_ADDR addr;
+  int count;
+  char filename[64];
+  int i;
+  int ret;
+  int fd;
 
-  process_info *proc = current_process ();
-
-  int fd = proc->priv->mem_fd;
-  if (fd == -1)
-    return EIO;
-
-  while (len > 0)
+  /* Try using /proc.  Don't bother for one word.  */
+  if (len >= 3 * sizeof (long))
     {
       int bytes;
+
+      /* We could keep this file open and cache it - possibly one per
+	 thread.  That requires some juggling, but is even faster.  */
+      sprintf (filename, "/proc/%d/mem", pid);
+      fd = open (filename, O_RDONLY | O_LARGEFILE);
+      if (fd == -1)
+	goto no_proc;
 
       /* If pread64 is available, use it.  It's faster if the kernel
 	 supports it (only one syscall), and it's 64-bit safe even on
 	 32-bit platforms (for instance, SPARC debugging a SPARC64
 	 application).  */
 #ifdef HAVE_PREAD64
-      bytes = (readbuf != nullptr
-	       ? pread64 (fd, readbuf, len, memaddr)
-	       : pwrite64 (fd, writebuf, len, memaddr));
+      bytes = pread64 (fd, myaddr, len, memaddr);
 #else
       bytes = -1;
       if (lseek (fd, memaddr, SEEK_SET) != -1)
-	bytes = (readbuf != nullptr
-		 ? read (fd, readbuf, len)
-		 ? write (fd, writebuf, len));
+	bytes = read (fd, myaddr, len);
 #endif
 
-      if (bytes < 0)
-	return errno;
-      else if (bytes == 0)
-	{
-	  /* EOF means the address space is gone, the whole process
-	     exited or execed.  */
-	  return EIO;
-	}
+      close (fd);
+      if (bytes == len)
+	return 0;
 
-      memaddr += bytes;
-      if (readbuf != nullptr)
-	readbuf += bytes;
-      else
-	writebuf += bytes;
-      len -= bytes;
+      /* Some data was read, we'll try to get the rest with ptrace.  */
+      if (bytes > 0)
+	{
+	  memaddr += bytes;
+	  myaddr += bytes;
+	  len -= bytes;
+	}
     }
 
-  return 0;
-}
+ no_proc:
+  /* Round starting address down to longword boundary.  */
+  addr = memaddr & -(CORE_ADDR) sizeof (PTRACE_XFER_TYPE);
+  /* Round ending address up; get number of longwords that makes.  */
+  count = ((((memaddr + len) - addr) + sizeof (PTRACE_XFER_TYPE) - 1)
+	   / sizeof (PTRACE_XFER_TYPE));
+  /* Allocate buffer of that many longwords.  */
+  buffer = XALLOCAVEC (PTRACE_XFER_TYPE, count);
 
-int
-linux_process_target::read_memory (CORE_ADDR memaddr,
-				   unsigned char *myaddr, int len)
-{
-  return proc_xfer_memory (memaddr, myaddr, nullptr, len);
+  /* Read all the longwords */
+  errno = 0;
+  for (i = 0; i < count; i++, addr += sizeof (PTRACE_XFER_TYPE))
+    {
+      /* Coerce the 3rd arg to a uintptr_t first to avoid potential gcc warning
+	 about coercing an 8 byte integer to a 4 byte pointer.  */
+      buffer[i] = ptrace (PTRACE_PEEKTEXT, pid,
+			  (PTRACE_TYPE_ARG3) (uintptr_t) addr,
+			  (PTRACE_TYPE_ARG4) 0);
+      if (errno)
+	break;
+    }
+  ret = errno;
+
+  /* Copy appropriate bytes out of the buffer.  */
+  if (i > 0)
+    {
+      i *= sizeof (PTRACE_XFER_TYPE);
+      i -= memaddr & (sizeof (PTRACE_XFER_TYPE) - 1);
+      memcpy (myaddr,
+	      (char *) buffer + (memaddr & (sizeof (PTRACE_XFER_TYPE) - 1)),
+	      i < len ? i : len);
+    }
+
+  return ret;
 }
 
 /* Copy LEN bytes of data from debugger memory at MYADDR to inferior's
@@ -5428,6 +5411,25 @@ int
 linux_process_target::write_memory (CORE_ADDR memaddr,
 				    const unsigned char *myaddr, int len)
 {
+  int i;
+  /* Round starting address down to longword boundary.  */
+  CORE_ADDR addr = memaddr & -(CORE_ADDR) sizeof (PTRACE_XFER_TYPE);
+  /* Round ending address up; get number of longwords that makes.  */
+  int count
+    = (((memaddr + len) - addr) + sizeof (PTRACE_XFER_TYPE) - 1)
+    / sizeof (PTRACE_XFER_TYPE);
+
+  /* Allocate buffer of that many longwords.  */
+  PTRACE_XFER_TYPE *buffer = XALLOCAVEC (PTRACE_XFER_TYPE, count);
+
+  int pid = lwpid_of (current_thread);
+
+  if (len == 0)
+    {
+      /* Zero length write always succeeds.  */
+      return 0;
+    }
+
   if (debug_threads)
     {
       /* Dump up to four bytes.  */
@@ -5435,7 +5437,7 @@ linux_process_target::write_memory (CORE_ADDR memaddr,
       char *p = str;
       int dump = len < 4 ? len : 4;
 
-      for (int i = 0; i < dump; i++)
+      for (i = 0; i < dump; i++)
 	{
 	  sprintf (p, "%02x", myaddr[i]);
 	  p += 2;
@@ -5443,10 +5445,54 @@ linux_process_target::write_memory (CORE_ADDR memaddr,
       *p = '\0';
 
       threads_debug_printf ("Writing %s to 0x%08lx in process %d",
-			    str, (long) memaddr, current_process ()->pid);
+			    str, (long) memaddr, pid);
     }
 
-  return proc_xfer_memory (memaddr, nullptr, myaddr, len);
+  /* Fill start and end extra bytes of buffer with existing memory data.  */
+
+  errno = 0;
+  /* Coerce the 3rd arg to a uintptr_t first to avoid potential gcc warning
+     about coercing an 8 byte integer to a 4 byte pointer.  */
+  buffer[0] = ptrace (PTRACE_PEEKTEXT, pid,
+		      (PTRACE_TYPE_ARG3) (uintptr_t) addr,
+		      (PTRACE_TYPE_ARG4) 0);
+  if (errno)
+    return errno;
+
+  if (count > 1)
+    {
+      errno = 0;
+      buffer[count - 1]
+	= ptrace (PTRACE_PEEKTEXT, pid,
+		  /* Coerce to a uintptr_t first to avoid potential gcc warning
+		     about coercing an 8 byte integer to a 4 byte pointer.  */
+		  (PTRACE_TYPE_ARG3) (uintptr_t) (addr + (count - 1)
+						  * sizeof (PTRACE_XFER_TYPE)),
+		  (PTRACE_TYPE_ARG4) 0);
+      if (errno)
+	return errno;
+    }
+
+  /* Copy data to be written over corresponding part of buffer.  */
+
+  memcpy ((char *) buffer + (memaddr & (sizeof (PTRACE_XFER_TYPE) - 1)),
+	  myaddr, len);
+
+  /* Write the entire buffer.  */
+
+  for (i = 0; i < count; i++, addr += sizeof (PTRACE_XFER_TYPE))
+    {
+      errno = 0;
+      ptrace (PTRACE_POKETEXT, pid,
+	      /* Coerce to a uintptr_t first to avoid potential gcc warning
+		 about coercing an 8 byte integer to a 4 byte pointer.  */
+	      (PTRACE_TYPE_ARG3) (uintptr_t) addr,
+	      (PTRACE_TYPE_ARG4) buffer[i]);
+      if (errno)
+	return errno;
+    }
+
+  return 0;
 }
 
 void
@@ -6158,6 +6204,25 @@ void
 linux_process_target::unpause_all (bool unfreeze)
 {
   unstop_all_lwps (unfreeze, NULL);
+}
+
+int
+linux_process_target::prepare_to_access_memory ()
+{
+  /* Neither ptrace nor /proc/PID/mem allow accessing memory through a
+     running LWP.  */
+  if (non_stop)
+    target_pause_all (true);
+  return 0;
+}
+
+void
+linux_process_target::done_accessing_memory ()
+{
+  /* Neither ptrace nor /proc/PID/mem allow accessing memory through a
+     running LWP.  */
+  if (non_stop)
+    target_unpause_all (true);
 }
 
 /* Extract &phdr and num_phdr in the inferior.  Return 0 on success.  */
