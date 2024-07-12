@@ -9,7 +9,7 @@ export RANLIB=llvm-ranlib
 export CFLAGS="-target $TARGET -O2 -g3 --sysroot=$NDK_PATH/toolchains/llvm/prebuilt/$HOST/sysroot -idirafter $NDK_PATH/toolchains/llvm/prebuilt/$HOST/sysroot/usr/include"
 export CPPFLAGS="-target $TARGET -O2 -g3 --sysroot=$NDK_PATH/toolchains/llvm/prebuilt/$HOST/sysroot -idirafter $NDK_PATH/toolchains/llvm/prebuilt/$HOST/sysroot/usr/include/ -idirafter $NDK_PATH/sources/cxx-stl/llvm-libc++/include"
 export CXXFLAGS="-target $TARGET --sysroot=$NDK_PATH/toolchains/llvm/prebuilt/$HOST/sysroot -idirafter $NDK_PATH/toolchains/llvm/prebuilt/$HOST/sysroot/usr/include/ -idirafter $NDK_PATH/sources/cxx-stl/llvm-libc++/include"
-export LDFLAGS="-pie -static-libstdc++ -fuse-ld=lld --rtlib=compiler-rt --sysroot=$NDK_PATH/toolchains/llvm/prebuilt/$HOST/sysroot -L$NDK_PATH/sources/cxx-stl/llvm-libc++/libs/$ARCH -L$NDK_PATH/toolchains/llvm/prebuilt/$HOST/sysroot/usr/lib/$TARGET/21/ -B/Users/zuojianlin/Library/Android/sdk/ndk-bundle/toolchains/$TARGET-4.9/prebuilt/$HOST/$TARGET/bin"
+export LDFLAGS="-pie -static-libstdc++ -fuse-ld=lld --rtlib=compiler-rt --sysroot=$NDK_PATH/toolchains/llvm/prebuilt/$HOST/sysroot -L$NDK_PATH/sources/cxx-stl/llvm-libc++/libs/$ARCH -L$NDK_PATH/toolchains/llvm/prebuilt/$HOST/sysroot/usr/lib/$TARGET/21/ -B/Users/zuojianlin/Library/Android/sdk/ndk-bundle/toolchains/$TARGET-4.9/prebuilt/$HOST/$TARGET/bin -Wl,-z,max-page-size=65536"
 export LIBS="-lc"
 
 ../configure --host=$TARGET --target=$TARGET \
