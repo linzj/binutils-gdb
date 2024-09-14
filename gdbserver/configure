@@ -15086,15 +15086,15 @@ _ACEOF
   fi
 
 MAYBE_LIBICONV=
-case "$host" in
-  *linux*)
-    if test "$am_cv_func_iconv" != yes; then
-      as_fn_error $? "could not find libiconv (required for host $host)" "$LINENO" 5
-    fi
-
-    MAYBE_LIBICONV="$LIBICONV"
-    ;;
-esac
+# case "$host" in
+#   *linux*)
+#     if test "$am_cv_func_iconv" != yes; then
+#       as_fn_error $? "could not find libiconv (required for host $host)" "$LINENO" 5
+#     fi
+# 
+#     MAYBE_LIBICONV="$LIBICONV"
+#     ;;
+# esac
 
 
 

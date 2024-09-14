@@ -4264,7 +4264,7 @@ func_mode_link ()
     old_convenience=
     deplibs=
     old_deplibs=
-    compiler_flags=
+    compiler_flags=$LTCFLAGS
     linker_flags=
     dllsearchpath=
     lib_search_path=`pwd`
